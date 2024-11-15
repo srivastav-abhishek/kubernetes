@@ -909,14 +909,8 @@ func (MemCheck) Name() string {
 
 // InitNodeChecks returns checks specific to "kubeadm init"
 func InitNodeChecks(execer utilsexec.Interface, cfg *kubeadmapi.InitConfiguration, ignorePreflightErrors sets.Set[string], isSecondaryControlPlane bool, downloadCerts bool) ([]Checker, error) {
-	var checks []Checker
 	manifestsDir := filepath.Join(kubeadmconstants.KubernetesDir, kubeadmconstants.ManifestsSubDirName)
-	if !isSecondaryControlPlane {
-		checks = []Checker{
-			IsPrivilegedUserCheck{},
-		}
-	}
-	additionalChecks := []Checker{
+	checks := []Checker{
 		NumCPUCheck{NumCPU: kubeadmconstants.ControlPlaneNumCPU},
 		// Linux only
 		// TODO: support other OS, if control-plane is supported on it.
@@ -932,7 +926,6 @@ func InitNodeChecks(execer utilsexec.Interface, cfg *kubeadmapi.InitConfiguratio
 		FileAvailableCheck{Path: kubeadmconstants.GetStaticPodFilepath(kubeadmconstants.Etcd, manifestsDir)},
 		HTTPProxyCheck{Proto: "https", Host: cfg.LocalAPIEndpoint.AdvertiseAddress},
 	}
-	checks = append(checks, additionalChecks...)
 	// File content check for IPV4 and IPV6 are needed if it is:
 	// (dual stack)  `--service-cidr` or `--pod-network-cidr` is set with an IPV4 and IPV6 CIDR, `--apiserver-advertise-address` is optional as it can be auto-detected.
 	// (single stack) which is decided by the `--apiserver-advertise-address`.
@@ -1020,6 +1013,12 @@ func InitNodeChecks(execer utilsexec.Interface, cfg *kubeadmapi.InitConfiguratio
 // The boolean flag 'downloadCerts' controls whether we should skip checks on certificates because we are downloading them.
 // If the flag is set to true we should skip checks already executed by RunJoinNodeChecks.
 func RunInitNodeChecks(execer utilsexec.Interface, cfg *kubeadmapi.InitConfiguration, ignorePreflightErrors sets.Set[string], isSecondaryControlPlane bool, downloadCerts bool) error {
+	if !isSecondaryControlPlane {
+		// First, check if we're root separately from the other preflight checks and fail fast.
+		if err := RunRootCheckOnly(ignorePreflightErrors); err != nil {
+			return err
+		}
+	}
 	checks, err := InitNodeChecks(execer, cfg, ignorePreflightErrors, isSecondaryControlPlane, downloadCerts)
 	if err != nil {
 		return err
@@ -1030,7 +1029,6 @@ func RunInitNodeChecks(execer utilsexec.Interface, cfg *kubeadmapi.InitConfigura
 // JoinNodeChecks returns checks specific to "kubeadm join"
 func JoinNodeChecks(execer utilsexec.Interface, cfg *kubeadmapi.JoinConfiguration, ignorePreflightErrors sets.Set[string]) ([]Checker, error) {
 	checks := []Checker{
-		IsPrivilegedUserCheck{},
 		FileAvailableCheck{Path: filepath.Join(kubeadmconstants.KubernetesDir, kubeadmconstants.KubeletKubeConfigFileName)},
 		FileAvailableCheck{Path: filepath.Join(kubeadmconstants.KubernetesDir, kubeadmconstants.KubeletBootstrapKubeConfigFileName)},
 	}
@@ -1060,6 +1058,10 @@ func JoinNodeChecks(execer utilsexec.Interface, cfg *kubeadmapi.JoinConfiguratio
 
 // RunJoinNodeChecks executes all individual, applicable to node checks.
 func RunJoinNodeChecks(execer utilsexec.Interface, cfg *kubeadmapi.JoinConfiguration, ignorePreflightErrors sets.Set[string]) error {
+	// First, check if we're root separately from the other preflight checks and fail fast.
+	if err := RunRootCheckOnly(ignorePreflightErrors); err != nil {
+		return err
+	}
 	checks, err := JoinNodeChecks(execer, cfg, ignorePreflightErrors)
 	if err != nil {
 		return err
