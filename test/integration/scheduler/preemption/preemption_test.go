@@ -1985,21 +1985,55 @@ func TestPreemptionRespectsBindingPod(t *testing.T) {
 		t.Fatalf("Failed waiting for victim validation: %v", err)
 	}
 
-	// 6. Check that preemptor and victim are scheduled on expected nodes: victim on a small node and preemptor on a big node.
-	v, err := cs.CoreV1().Pods(testCtx.NS.Name).Get(testCtx.Ctx, victim.Name, metav1.GetOptions{})
+	// 4. Wait for preemptor to be scheduled.
+	err = wait.PollUntilContextTimeout(testCtx.Ctx, 100*time.Millisecond, 10*time.Second, false, func(ctx context.Context) (bool, error) {
+		p, err := cs.CoreV1().Pods(testCtx.NS.Name).Get(ctx, preemptor.Name, metav1.GetOptions{})
+		if err != nil {
+			return false, err
+		}
+		// Check if preemptor is scheduled
+		_, cond := podutil.GetPodCondition(&p.Status, v1.PodScheduled)
+		if cond != nil && cond.Status == v1.ConditionTrue {
+			return true, nil
+		}
+		return false, nil
+	})
 	if err != nil {
-		t.Fatalf("Error getting victim: %v", err)
-	}
-	if v.Spec.NodeName != "small-node" {
-		t.Fatalf("Victim should be scheduled on node2, but was scheduled on %s", v.Spec.NodeName)
+		t.Fatalf("Failed waiting for preemptor to be scheduled: %v", err)
 	}
 
-	p, err := cs.CoreV1().Pods(testCtx.NS.Name).Get(testCtx.Ctx, preemptor.Name, metav1.GetOptions{})
+	// 5. Verify final node assignments with proper synchronization.
+	// The PodScheduled condition can be set before Spec.NodeName is fully persisted,
+	// so we need to wait until both pods have their final node assignments.
+	var v, p *v1.Pod
+	err = wait.PollUntilContextTimeout(testCtx.Ctx, 100*time.Millisecond, 10*time.Second, false, func(ctx context.Context) (bool, error) {
+		var err error
+		v, err = cs.CoreV1().Pods(testCtx.NS.Name).Get(ctx, victim.Name, metav1.GetOptions{})
+		if err != nil {
+			return false, err
+		}
+		p, err = cs.CoreV1().Pods(testCtx.NS.Name).Get(ctx, preemptor.Name, metav1.GetOptions{})
+		if err != nil {
+			return false, err
+		}
+
+		// Wait until both pods have node assignments
+		if v.Spec.NodeName == "" || p.Spec.NodeName == "" {
+			return false, nil
+		}
+
+		// Verify the assignments are correct
+		if v.Spec.NodeName != "small-node" {
+			return false, fmt.Errorf("victim should be scheduled on small-node, but was scheduled on %s", v.Spec.NodeName)
+		}
+		if p.Spec.NodeName != "big-node" {
+			return false, fmt.Errorf("preemptor should be scheduled on big-node, but was scheduled on %s", p.Spec.NodeName)
+		}
+
+		return true, nil
+	})
 	if err != nil {
-		t.Fatalf("Error getting preemptor: %v", err)
-	}
-	if p.Spec.NodeName != "big-node" {
-		t.Fatalf("Preemptor should be scheduled on big-node, but was scheduled on %s", v.Spec.NodeName)
+		t.Fatalf("Failed waiting for correct pod node assignments: %v", err)
 	}
 
 	// Start a goroutine to release the plugin just in case, ensuring clean teardown.
